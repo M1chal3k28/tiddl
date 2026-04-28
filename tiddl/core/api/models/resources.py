@@ -69,9 +69,9 @@ class Video(BaseModel):
         picture: Optional[str] = None
 
     class Album(BaseModel):
-        id: int
-        title: str
-        cover: str
+        id: Optional[int] = None
+        title: Optional[str] = None
+        cover: Optional[str] = None
         vibrantColor: Optional[str] = None
         videoCover: Optional[str] = None
 
@@ -81,7 +81,7 @@ class Video(BaseModel):
     trackNumber: int
     streamStartDate: Optional[datetime] = None
     imagePath: Optional[str] = None
-    imageId: str
+    imageId: Optional[str] = None
     vibrantColor: Optional[str] = None
     duration: int
     quality: Literal["MP4_1080P"] | str
@@ -134,7 +134,7 @@ class Album(BaseModel):
     vibrantColor: Optional[str] = None
     videoCover: Optional[str] = None
     explicit: bool
-    upc: str
+    upc: Optional[str] = None
     popularity: int
     audioQuality: str
     audioModes: List[str]
@@ -163,7 +163,7 @@ class Playlist(BaseModel):
     url: str
     image: Optional[str] = None
     popularity: int
-    squareImage: str
+    squareImage: Optional[str] = None
     promotedArtists: List[Album.Artist]
     lastItemAddedAt: Optional[str] = None
 

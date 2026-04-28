@@ -119,6 +119,14 @@ def download_callback(
             help="Videos handling: 'none' to exclude, 'allow' to include, 'only' to download videos only.",
         ),
     ] = CONFIG.download.videos_filter,
+    RAISE_ERRORS: Annotated[
+        bool,
+        typer.Option(
+            "--raise-errors",
+            "-err",
+            help="Raise an error on resource download failure. Use for debugging",
+        ),
+    ] = False,
 ):
     """
     Download Tidal resources.
@@ -127,6 +135,18 @@ def download_callback(
     ctx.invoke(refresh, EARLY_EXPIRE_TIME=600)
 
     log.debug(f"{ctx.params=}")
+
+    def write_lrc_file(track: Track, lyrics: str, file_path: Path):
+        if not CONFIG.download.write_lrc_file or not lyrics.strip():
+            return
+
+        lrc_file_path = file_path.with_suffix(".lrc")
+
+        try:
+            with open(lrc_file_path, "w", encoding="utf-8") as f:
+                f.write(lyrics)
+        except Exception as e:
+            log.error(f"Failed to write LRC file for track {track.title} (ID: {track.id}): {e}")
 
     def save_m3u(
         resource_type: VALID_M3U_RESOURCE_LITERAL,
@@ -186,6 +206,7 @@ def download_callback(
             skip_existing=not SKIP_EXISTING,
             download_path=DOWNLOAD_PATH,
             scan_path=SCAN_PATH,
+            match_existing_path_case=CONFIG.download.match_existing_path_case,
         )
 
         class Metadata:
@@ -230,7 +251,7 @@ def download_callback(
                     if isinstance(item, Track):
                         lyrics_subtitles = ""
 
-                        if CONFIG.metadata.lyrics:
+                        if CONFIG.metadata.lyrics or CONFIG.download.write_lrc_file:
                             try:
                                 lyrics_subtitles = ctx.obj.api.get_track_lyrics(
                                     item.id
@@ -247,6 +268,8 @@ def download_callback(
 
                         if track_metadata.cover and track_metadata.cover.data is None:
                             track_metadata.cover.fetch_data()
+
+                        write_lrc_file(item, lyrics_subtitles, download_path)
 
                         add_track_metadata(
                             path=download_path,
@@ -316,19 +339,34 @@ def download_callback(
                             )
                             continue
 
-                        futures.append(
-                            handle_item(
-                                item=album_item.item,
-                                file_path=file_path,
-                                track_metadata=Metadata(
-                                    cover=cover,
-                                    date=str(album.releaseDate),
-                                    artist=album.artist.name if album.artist else "",
-                                    credits=album_item.credits,
-                                    album_review=album_review,
-                                ),
+                        try:
+                            futures.append(
+                                handle_item(
+                                    item=album_item.item,
+                                    file_path=file_path,
+                                    track_metadata=Metadata(
+                                        cover=cover,
+                                        date=str(album.releaseDate),
+                                        artist=album.artist.name if album.artist else "",
+                                        credits=album_item.credits,
+                                        album_review=album_review,
+                                    ),
+                                )
                             )
-                        )
+                        except ApiError as e:
+                            item = album_item.item
+                            track_info = f"Track: {getattr(item, 'title', 'Unknown')} (ID: {item.id})"
+                            if hasattr(item, 'album') and item.album:
+                                track_info += f", Album ID: {item.album.id}"
+                            ctx.obj.console.print(f"[red]API Error:[/] {e} ({track_info})")
+                            if RAISE_ERRORS:
+                                raise
+                        except Exception as e:
+                            item = album_item.item
+                            track_info = f"Track: {getattr(item, 'title', 'Unknown')} (ID: {item.id})"
+                            ctx.obj.console.print(f"[red]Error:[/] {e} ({track_info})")
+                            if RAISE_ERRORS:
+                                raise
 
                     offset += album_items.limit
                     if offset >= album_items.totalNumberOfItems:
@@ -364,6 +402,12 @@ def download_callback(
                     track = ctx.obj.api.get_track(resource.id)
                     album = ctx.obj.api.get_album(track.album.id)
 
+                    cover: Cover | None = None
+                    save_cover = ("track" in CONFIG.cover.allowed) and CONFIG.cover.save
+
+                    if album.cover and (CONFIG.metadata.cover or save_cover):
+                        cover = Cover(album.cover, size=CONFIG.cover.size)
+
                     await handle_item(
                         item=track,
                         file_path=format_template(
@@ -371,6 +415,12 @@ def download_callback(
                             item=track,
                             album=album,
                             quality=get_item_quality(track),
+                        ),
+                        track_metadata=Metadata(
+                            cover=cover,
+                            date=str(album.releaseDate),
+                            artist=album.artist.name if album.artist else "",
+                            # credits are missing
                         ),
                     )
 
@@ -390,12 +440,19 @@ def download_callback(
 
                 case "video":
                     video = ctx.obj.api.get_video(resource.id)
+                    template = TEMPLATE or CONFIG.templates.video
+
+                    if "{album" in template and video.album and video.album.id is not None:
+                        album = ctx.obj.api.get_album(video.album.id)
+                    else:
+                        album = None
 
                     await handle_item(
                         item=video,
                         file_path=format_template(
-                            template=TEMPLATE or CONFIG.templates.video,
+                            template=template,
                             item=video,
+                            album=album,
                             quality=get_item_quality(video),
                         ),
                     )
@@ -408,17 +465,40 @@ def download_callback(
                         mix_items = ctx.obj.api.get_mix_items(resource.id, offset=0)
 
                         for mix_item in mix_items.items:
-                            futures.append(
-                                handle_item(
-                                    item=mix_item.item,
-                                    file_path=format_template(
-                                        template=TEMPLATE or CONFIG.templates.mix,
+                            template = TEMPLATE or CONFIG.templates.mix
+
+                            try:
+                                if "{album" in template:
+                                    album = ctx.obj.api.get_album(
+                                        mix_item.item.album.id
+                                    )
+                                else:
+                                    album = None
+
+                                futures.append(
+                                    handle_item(
                                         item=mix_item.item,
-                                        mix_id=resource.id,
-                                        quality=get_item_quality(mix_item.item),
-                                    ),
+                                        file_path=format_template(
+                                            template=template,
+                                            item=mix_item.item,
+                                            album=album,
+                                            mix_id=resource.id,
+                                            quality=get_item_quality(mix_item.item),
+                                        ),
+                                    )
                                 )
-                            )
+                            except ApiError as e:
+                                item = mix_item.item
+                                track_info = f"Track: {getattr(item, 'title', 'Unknown')} (ID: {item.id})"
+                                ctx.obj.console.print(f"[red]API Error:[/] {e} ({track_info})")
+                                if RAISE_ERRORS:
+                                    raise
+                            except Exception as e:
+                                item = mix_item.item
+                                track_info = f"Track: {getattr(item, 'title', 'Unknown')} (ID: {item.id})"
+                                ctx.obj.console.print(f"[red]Error:[/] {e} ({track_info})")
+                                if RAISE_ERRORS:
+                                    raise
 
                         offset += mix_items.limit
                         if offset >= mix_items.totalNumberOfItems:
@@ -430,6 +510,7 @@ def download_callback(
                         resource_type="mix",
                         filename=format_template(
                             CONFIG.m3u.templates.mix,
+                            mix_id=resource.id,
                             type="mix",
                         ),
                         tracks_with_path=tracks_with_path,
@@ -442,6 +523,18 @@ def download_callback(
                 case "artist":
                     futures = []
 
+                    async def safe_download_album(album: Album):
+                        try:
+                            await download_album(album)
+                        except ApiError as e:
+                            ctx.obj.console.print(f"[red]API Error:[/] {e} (Album: {album.title}, ID: {album.id})")
+                            if RAISE_ERRORS:
+                                raise
+                        except Exception as e:
+                            ctx.obj.console.print(f"[red]Error:[/] {e} (Album: {album.title}, ID: {album.id})")
+                            if RAISE_ERRORS:
+                                raise
+
                     def get_all_albums(singles: bool):
                         offset = 0
 
@@ -453,7 +546,7 @@ def download_callback(
                             )
 
                             for album in artist_albums.items:
-                                futures.append(download_album(album))
+                                futures.append(safe_download_album(album))
 
                             offset += artist_albums.limit
                             if offset >= artist_albums.totalNumberOfItems:
@@ -468,16 +561,33 @@ def download_callback(
                             )
 
                             for video in artist_videos.items:
-                                futures.append(
-                                    handle_item(
-                                        item=video,
-                                        file_path=format_template(
-                                            template=TEMPLATE or CONFIG.templates.video,
+                                template = TEMPLATE or CONFIG.templates.video
+
+                                try:
+                                    if "{album" in template and video.album:
+                                        album = ctx.obj.api.get_album(video.album.id)
+                                    else:
+                                        album = None
+
+                                    futures.append(
+                                        handle_item(
                                             item=video,
-                                            quality=get_item_quality(video),
-                                        ),
+                                            file_path=format_template(
+                                                template=template,
+                                                item=video,
+                                                album=album,
+                                                quality=get_item_quality(video),
+                                            ),
+                                        )
                                     )
-                                )
+                                except ApiError as e:
+                                    ctx.obj.console.print(f"[red]API Error:[/] {e} (Video: {video.title}, ID: {video.id})")
+                                    if RAISE_ERRORS:
+                                        raise
+                                except Exception as e:
+                                    ctx.obj.console.print(f"[red]Error:[/] {e} (Video: {video.title}, ID: {video.id})")
+                                    if RAISE_ERRORS:
+                                        raise
 
                             if offset > artist_videos.totalNumberOfItems:
                                 break
@@ -602,8 +712,12 @@ def download_callback(
                     await handle_resource(r)
                 except ApiError as e:
                     ctx.obj.console.print(f"[red]API Error:[/] {e} ({r})")
+                    if RAISE_ERRORS:
+                        raise
                 except Exception as e:
                     ctx.obj.console.print(f"[red]Error:[/] {e} ({r})")
+                    if RAISE_ERRORS:
+                        raise
 
             await asyncio.gather(*(wrapper(r) for r in ctx.obj.resources))
 

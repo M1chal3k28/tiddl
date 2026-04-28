@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from tiddl.core.api.models import Track, Video, Album, Playlist
@@ -35,7 +35,7 @@ class Explicit:
         if self.value is None:
             return ""
 
-        features = format_spec.split(",")
+        features = format_spec.split("; ")
 
         def get_base():
             for feature in features:
@@ -67,14 +67,14 @@ class UserFormat:
 
 @dataclass(slots=True)
 class AlbumTemplate:
-    id: int
-    title: str
-    artist: str
-    artists: str
-    date: datetime
-    explicit: Explicit
-    master: UserFormat
-    release: str
+    id: int = 0
+    title: str = ""
+    artist: str = ""
+    artists: str = ""
+    date: datetime = datetime.min
+    explicit: Explicit = field(default_factory=lambda: Explicit(None))
+    master: UserFormat = field(default_factory=lambda: UserFormat(False))
+    release: str = ""
 
 
 @dataclass(slots=True)
@@ -149,14 +149,14 @@ def generate_template_data(
             isrc=isrc,
             quality=quality,
             artist=item.artist.name if item.artist else "",
-            artists=", ".join(main_artists),
-            features=", ".join(featured_artists),
-            artists_with_features=", ".join(main_artists + featured_artists),
+            artists="; ".join(main_artists),
+            features="; ".join(featured_artists),
+            artists_with_features="; ".join(main_artists + featured_artists),
             explicit=Explicit(getattr(item, "explicit", None)),
             dolby=dolby,
         )
 
-    album_template = None
+    album_template = AlbumTemplate()
     if album:
         album_template = AlbumTemplate(
             id=album.id,
