@@ -26,6 +26,7 @@ from tiddl.cli.ctx import Context
 from tiddl.cli.commands.auth import refresh
 from tiddl.cli.commands.subcommands import register_subcommands
 
+from tiddl.core.api.api import Limits
 
 from .downloader import Downloader
 from .output import RichOutput
@@ -509,28 +510,54 @@ def download_callback(
                         for playlist_item in playlist_items.items:
                             playlist_index += 1
                             template = TEMPLATE or CONFIG.templates.playlist
-
-                            if "{album" in template:
-                                album = ctx.obj.api.get_album(
-                                    playlist_item.item.album.id
-                                )
-                            else:
-                                album = None
-
-                            futures.append(
-                                handle_item(
-                                    item=playlist_item.item,
-                                    file_path=format_template(
-                                        template=template,
-                                        item=playlist_item.item,
-                                        album=album,
-                                        playlist=playlist,
-                                        playlist_index=playlist_index,
-                                        quality=get_item_quality(playlist_item.item),
-                                    ),
-                                    track_metadata=Metadata(),
-                                )
+                            album = ctx.obj.api.get_album(
+                                playlist_item.item.album.id
                             )
+                            
+                            if album:
+                                album_items = ctx.obj.api.get_album_items_credits(
+                                    album.id,
+                                    limit=Limits.ALBUM_ITEMS_MAX
+                                )
+
+                                for _album_item in album_items.items:
+                                    if _album_item.item.id == playlist_item.item.id:
+                                        futures.append(
+                                            handle_item(
+                                                item=playlist_item.item,
+                                                file_path=format_template(
+                                                    template=template,
+                                                    item=playlist_item.item,
+                                                    album=album,
+                                                    playlist=playlist,
+                                                    playlist_index=playlist_index,
+                                                    quality=get_item_quality(playlist_item.item),
+                                                ),
+                                                track_metadata=Metadata(
+                                                    date=str(album.releaseDate),
+                                                    artist=playlist_item.item.artist.name if playlist_item.item.artist else "",
+                                                    credits=_album_item.credits
+                                                ),
+                                            )
+                                        )
+                            else:
+                                futures.append(
+                                    handle_item(
+                                        item=playlist_item.item,
+                                        file_path=format_template(
+                                            template=template,
+                                            item=playlist_item.item,
+                                            album=album,
+                                            playlist=playlist,
+                                            playlist_index=playlist_index,
+                                            quality=get_item_quality(playlist_item.item),
+                                        ),
+                                        track_metadata=Metadata(
+                                            date=str(playlist_item.item.streamStartDate.date),
+                                            artist=playlist_item.item.artist,
+                                        ),
+                                    )
+                                )
 
                         offset += playlist_items.limit
                         if offset >= playlist_items.totalNumberOfItems:

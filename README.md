@@ -159,7 +159,7 @@ You should create virtual environment and activate it
 
 ```bash
 uv venv
-source .venv/Scripts/activate
+source .venv/Scripts/activate¬
 ```
 
 Install package with `--editable` flag
