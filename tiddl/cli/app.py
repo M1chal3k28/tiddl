@@ -13,6 +13,9 @@ log = logging.getLogger("tiddl")
 app = typer.Typer(name="tiddl", no_args_is_help=True, rich_markup_mode="rich")
 register_commands(app)
 
+VERSION = "v3.4.3"
+
+
 @app.callback()
 def callback(
     ctx: Context,
@@ -29,13 +32,14 @@ def callback(
         ),
     ] = CONFIG.debug,
 ):
-    """
-    tiddl - download tidal tracks \u266b
+    f"""
+    tiddl {VERSION} - download tidal tracks \u266b
 
     [link=https://github.com/oskvr37/tiddl]github (https://github.com/oskvr37/tiddl)[/link]
     [link=https://buymeacoffee.com/oskvr][yellow]buy me a coffee (https://buymeacoffee.com/oskvr)[/link]
     """
 
+    log.debug(f"{VERSION=}")
     log.debug(f"{ctx.params=}")
 
     is_ffmpeg_installed = ifs()
